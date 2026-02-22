@@ -1,0 +1,20 @@
+[package]
+name = "yak_map"
+version = "0.1.0"
+edition = "2021"
+authors = ["Yakob <yakob@openod>"]
+
+[[bin]]
+name = "yak-map"
+path = "src/main.rs"
+
+[dependencies]
+zellij-tile = "0.43"
+serde = "1.0"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = true
+opt-level = "s"
