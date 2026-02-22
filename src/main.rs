@@ -341,6 +341,12 @@ impl State {
         prefix
     }
 
+    fn highlight_line(&self, line: &str, padding: &str) -> String {
+        let bg = "\x1b[48;5;237m";
+        let highlighted = line.replace("\x1b[0m", &format!("\x1b[0m{bg}"));
+        format!("{bg}{}{}\x1b[0m", highlighted, padding)
+    }
+
     fn render_task(&self, task: &TaskLine) -> String {
         let prefix = self.tree_prefix(task);
         let status = self.status_symbol(task);
@@ -509,12 +515,9 @@ impl ZellijPlugin for State {
             let line = self.render_task(task);
 
             if self.scroll_offset + i == self.selected_index {
-                // Re-establish reverse video after every reset so tree prefix colors
-                // and status symbols don't break the highlight bar mid-line.
-                let highlighted = line.replace("\x1b[0m", "\x1b[0m\x1b[7m");
                 let visible_len = strip_ansi(&line).chars().count();
                 let padding = " ".repeat(cols.saturating_sub(visible_len));
-                println!("\x1b[7m{}{}\x1b[0m", highlighted, padding);
+                println!("{}", self.highlight_line(&line, &padding));
             } else {
                 println!("{}", line);
             }
@@ -1015,5 +1018,36 @@ mod tests {
         state.refresh_tasks();
 
         assert_eq!(state.selected_index, 0);
+    }
+
+    #[test]
+    fn highlight_line_uses_explicit_bg_not_reverse_video() {
+        let state = State::default();
+        let result = state.highlight_line("hello", "   ");
+        assert!(result.starts_with("\x1b[48;5;237m"), "should start with explicit bg: {:?}", result);
+        assert!(!result.contains("\x1b[7m"), "should not use reverse video: {:?}", result);
+        assert!(result.ends_with("\x1b[0m"), "should end with reset: {:?}", result);
+    }
+
+    #[test]
+    fn highlight_line_reestablishes_bg_after_reset() {
+        let state = State::default();
+        // A line that contains a reset mid-way (e.g. from colored text)
+        let line = "\x1b[32mfoo\x1b[0mbar";
+        let result = state.highlight_line(line, "");
+        // After each \x1b[0m the bg color should be re-established
+        assert!(result.contains("\x1b[0m\x1b[48;5;237m"), "bg not re-established after reset: {:?}", result);
+    }
+
+    #[test]
+    fn highlight_line_padding_uses_same_bg() {
+        let state = State::default();
+        let result = state.highlight_line("hi", "     ");
+        // The bg is set at start before both the text and the padding
+        let bg = "\x1b[48;5;237m";
+        assert!(result.starts_with(bg));
+        // padding is inside the bg scope (before the final reset)
+        let reset_pos = result.rfind("\x1b[0m").unwrap();
+        assert!(reset_pos == result.len() - "\x1b[0m".len(), "final reset should be at end: {:?}", result);
     }
 }
