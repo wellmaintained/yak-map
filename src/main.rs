@@ -260,12 +260,17 @@ impl State {
         let line_color = "\x1b[90m";
         let reset = "\x1b[0m";
 
-        // For depth >= 2, show continuation only for grandparent (index 1)
-        if task.depth >= 2 {
-            if let Some(&grandparent_cont) = task.ancestor_continuations.get(1) {
-                if grandparent_cont {
-                    prefix.push_str(&format!("{}│ {}", line_color, reset));
-                }
+        // Show continuation columns for each ancestor level (from root-most to parent).
+        // ancestor_continuations is ordered [parent, grandparent, ...], so we take
+        // the first depth-1 entries (excluding the root-most) and reverse them to
+        // render columns from left (root-most) to right (parent-most).
+        let col_count = task.depth.saturating_sub(1);
+        let cols = &task.ancestor_continuations[..col_count.min(task.ancestor_continuations.len())];
+        for &has_continuation in cols.iter().rev() {
+            if has_continuation {
+                prefix.push_str(&format!("{}│ {}", line_color, reset));
+            } else {
+                prefix.push_str("  ");
             }
         }
 
@@ -638,11 +643,11 @@ mod tests {
     }
 
     #[test]
-    fn tree_prefix_depth_2_with_sibling_has_continuation() {
+    fn tree_prefix_depth_2_parent_has_sibling_shows_continuation() {
         let (_temp, yaks) = mock_yaks();
-        // Create depth 2: grandparent "parent" has sibling at root
+        // parent "child" has sibling "child2" under "parent"
         create_task(&yaks, "parent/child/grandchild");
-        create_task(&yaks, "sibling");
+        create_task(&yaks, "parent/child2");
 
         let repo = TaskRepository::new(yaks.clone());
         let mut state = State {
@@ -652,7 +657,7 @@ mod tests {
         state.refresh_tasks();
 
         let grandchild = state.tasks.iter().find(|t| t.name == "grandchild").unwrap();
-        // grandparent "parent" has sibling "sibling" at root, so continuation shows
+        // parent "child" has sibling "child2", so continuation line shows
         let prefix = state.tree_prefix(grandchild);
         assert_eq!(prefix, "\x1b[90m│ \x1b[0m\x1b[90m╰─\x1b[0m");
     }
@@ -678,9 +683,9 @@ mod tests {
     }
 
     #[test]
-    fn tree_prefix_depth_2_no_continuation_when_parent_not_last() {
+    fn tree_prefix_depth_2_no_continuation_when_parent_is_last() {
         let (_temp, yaks) = mock_yaks();
-        // Create depth 2: grandparent has no sibling at root
+        // "child" is the only child of "parent", so no continuation column
         create_task(&yaks, "parent/child/grandchild");
 
         let repo = TaskRepository::new(yaks.clone());
@@ -691,9 +696,32 @@ mod tests {
         state.refresh_tasks();
 
         let grandchild = state.tasks.iter().find(|t| t.name == "grandchild").unwrap();
-        // grandparent "parent" has no sibling at root, so no continuation
+        // parent "child" has no siblings, so empty continuation column + connector
         let prefix = state.tree_prefix(grandchild);
-        assert_eq!(prefix, "\x1b[90m╰─\x1b[0m");
+        assert_eq!(prefix, "  \x1b[90m╰─\x1b[0m");
+    }
+
+    #[test]
+    fn tree_prefix_depth_3_shows_two_continuation_columns() {
+        let (_temp, yaks) = mock_yaks();
+        // a/b/c/d at depth 3; b has sibling b2, c has no sibling
+        create_task(&yaks, "a/b/c/d");
+        create_task(&yaks, "a/b2");
+
+        let repo = TaskRepository::new(yaks.clone());
+        let mut state = State {
+            repository: repo,
+            ..Default::default()
+        };
+        state.refresh_tasks();
+
+        let d = state.tasks.iter().find(|t| t.name == "d").unwrap();
+        // Columns: [grandparent b has siblings → │ ] [parent c has no siblings → "  "] then ╰─
+        let prefix = state.tree_prefix(d);
+        assert_eq!(
+            prefix,
+            "\x1b[90m│ \x1b[0m  \x1b[90m╰─\x1b[0m"
+        );
     }
 
     #[test]
