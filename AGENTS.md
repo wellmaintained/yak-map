@@ -31,3 +31,11 @@ cargo test
 ```
 
 Dev dependencies (e.g. `tempfile`) are used for tests only.
+
+Tests build the plugin for the host (not WASM), so the native `zellij-utils` dependency pulls in `libcurl`. To fix **`library not found for -lcurl`** in this environment:
+
+1. **Install curl** (provides the library and creates the path `.cargo/config.toml` uses):  
+   `brew install curl`
+2. Run tests again: `cargo test`  
+   If the linker still can’t find curl, set the lib path explicitly:  
+   `LIBRARY_PATH="$(brew --prefix curl)/lib:$LIBRARY_PATH" cargo test`

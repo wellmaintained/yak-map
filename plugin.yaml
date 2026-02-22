@@ -7,3 +7,5 @@ authors:
   - Yakob <yakob@openod>
 version: 0.1.0
 dir: target/wasm32-wasip1/debug/yak-map.wasm
+permissions:
+  - OpenFiles

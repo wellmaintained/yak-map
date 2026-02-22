@@ -28,6 +28,10 @@ impl TaskRepository {
         Self { yaks_dir }
     }
 
+    pub fn yaks_dir(&self) -> &PathBuf {
+        &self.yaks_dir
+    }
+
     pub fn list_tasks(&self) -> Vec<(String, usize)> {
         let mut tasks = Vec::new();
         if self.yaks_dir.exists() {
@@ -62,6 +66,11 @@ impl TaskRepository {
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
+    }
+
+    /// Path to the context.md file for a task (may not exist yet).
+    pub fn context_path(&self, task_path: &str) -> PathBuf {
+        self.yaks_dir.join(task_path).join("context.md")
     }
 
     pub fn get_task(&self, path: &str, depth: usize) -> TaskLine {
@@ -123,6 +132,32 @@ impl Default for TaskLine {
             ancestor_continuations: Vec::new(),
         }
     }
+}
+
+/// Escape a string for use inside single-quoted shell literal (replace ' with '\'').
+fn escape_single_quoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// Copy the yak name (yx-style, space-separated) to the system clipboard.
+/// Tries pbcopy (macOS), then xclip, then xsel (Linux). Name is passed as $1 to avoid escaping.
+fn copy_yak_name_to_clipboard(yx_name: &str) {
+    let script = r#"if command -v pbcopy >/dev/null 2>&1; then printf '%s' "$1" | pbcopy
+elif command -v xclip >/dev/null 2>&1; then printf '%s' "$1" | xclip -selection clipboard
+elif command -v xsel >/dev/null 2>&1; then printf '%s' "$1" | xsel --clipboard
+else echo "No clipboard tool (pbcopy/xclip/xsel) found" >&2; exit 1
+fi"#;
+    run_command(&["sh", "-c", script, "sh", yx_name], BTreeMap::new());
 }
 
 impl State {
@@ -312,12 +347,33 @@ impl State {
             prefix, status_color, status, name, assignment
         )
     }
+
+    /// Open the selected task's context.md in a floating pane via $PAGER (or less).
+    fn open_selected_task_context(&self) {
+        let Some(task) = self.tasks.get(self.selected_index) else {
+            return;
+        };
+        let context_path = self.repository.context_path(&task.path);
+        if !context_path.exists() {
+            return;
+        }
+        let pager = std::env::var("PAGER").unwrap_or_else(|_| "less".to_string());
+        let host_path = context_path.strip_prefix("/host").unwrap_or(&context_path).to_path_buf();
+        let path_str = host_path.to_string_lossy().to_string();
+        let command = CommandToRun {
+            path: PathBuf::from(&pager),
+            args: vec![path_str],
+            cwd: None,
+        };
+        open_command_pane_floating(command, None, BTreeMap::new());
+    }
 }
 
 impl ZellijPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         subscribe(&[EventType::Timer, EventType::Key]);
         set_timeout(2.0);
+        request_permission(&[PermissionType::OpenFiles, PermissionType::RunCommands]);
 
         let yaks_dir = PathBuf::from("/host/.yaks");
 
@@ -342,13 +398,13 @@ impl ZellijPlugin for State {
             }
             Event::Key(key) => {
                 let handled = match key.bare_key {
-                    BareKey::Up if key.has_no_modifiers() => {
+                    BareKey::Up | BareKey::Char('k') if key.has_no_modifiers() => {
                         if self.selected_index > 0 {
                             self.selected_index -= 1;
                         }
                         true
                     }
-                    BareKey::Down if key.has_no_modifiers() => {
+                    BareKey::Down | BareKey::Char('j') if key.has_no_modifiers() => {
                         if self.selected_index + 1 < self.tasks.len() {
                             self.selected_index += 1;
                         }
@@ -356,6 +412,32 @@ impl ZellijPlugin for State {
                     }
                     BareKey::Char('r') if key.has_no_modifiers() => {
                         self.refresh_tasks();
+                        true
+                    }
+                    BareKey::Char('e') if key.has_no_modifiers() => {
+                        if let Some(task) = self.tasks.get(self.selected_index) {
+                            let context_path = self.repository.context_path(&task.path);
+                            if let Some(parent) = context_path.parent() {
+                                let _ = std::fs::create_dir_all(parent);
+                            }
+                            if !context_path.exists() {
+                                let _ = std::fs::write(&context_path, "");
+                            }
+                            let host_path = context_path.strip_prefix("/host").unwrap_or(&context_path).to_path_buf();
+                            let file_to_open = FileToOpen::new(host_path);
+                            open_file_floating(file_to_open, None, BTreeMap::new());
+                        }
+                        true
+                    }
+                    BareKey::Char('y') if key.has_no_modifiers() => {
+                        if let Some(task) = self.tasks.get(self.selected_index) {
+                            let yx_name = task.path.replace('/', " ");
+                            copy_yak_name_to_clipboard(&yx_name);
+                        }
+                        true
+                    }
+                    BareKey::Enter if key.has_no_modifiers() => {
+                        self.open_selected_task_context();
                         true
                     }
                     _ => false,
@@ -844,6 +926,28 @@ mod tests {
 
         assert!(state.tasks.is_empty());
         assert_eq!(state.selected_index, 0);
+    }
+
+    #[test]
+    fn escape_single_quoted_empty() {
+        assert_eq!(escape_single_quoted(""), "''");
+    }
+
+    #[test]
+    fn escape_single_quoted_no_special() {
+        assert_eq!(escape_single_quoted("foo-bar"), "'foo-bar'");
+    }
+
+    #[test]
+    fn escape_single_quoted_with_single_quote() {
+        assert_eq!(escape_single_quoted("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn yx_name_is_path_with_slashes_as_spaces() {
+        let path = "fix/stop/clear/path";
+        let yx_name = path.replace('/', " ");
+        assert_eq!(yx_name, "fix stop clear path");
     }
 
     #[test]
