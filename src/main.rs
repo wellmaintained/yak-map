@@ -103,6 +103,8 @@ struct State {
     tasks: Vec<TaskLine>,
     selected_index: usize,
     error: Option<String>,
+    toast_message: Option<String>,
+    toast_ticks_remaining: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -158,6 +160,26 @@ elif command -v xsel >/dev/null 2>&1; then printf '%s' "$1" | xsel --clipboard
 else echo "No clipboard tool (pbcopy/xclip/xsel) found" >&2; exit 1
 fi"#;
     run_command(&["sh", "-c", script, "sh", yx_name], BTreeMap::new());
+}
+
+/// Strip ANSI escape sequences (CSI sequences like \x1b[...m) from a string,
+/// returning only the visible characters.
+fn strip_ansi(s: &str) -> String {
+    let mut result = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next(); // consume '['
+            for inner in chars.by_ref() {
+                if inner.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
 }
 
 impl State {
@@ -394,6 +416,12 @@ impl ZellijPlugin for State {
             Event::Timer(_) => {
                 set_timeout(2.0);
                 self.refresh_tasks();
+                if self.toast_ticks_remaining > 0 {
+                    self.toast_ticks_remaining -= 1;
+                    if self.toast_ticks_remaining == 0 {
+                        self.toast_message = None;
+                    }
+                }
                 true
             }
             Event::Key(key) => {
@@ -433,6 +461,8 @@ impl ZellijPlugin for State {
                         if let Some(task) = self.tasks.get(self.selected_index) {
                             let yx_name = task.path.replace('/', " ");
                             copy_yak_name_to_clipboard(&yx_name);
+                            self.toast_message = Some(format!("Copied: {}", yx_name));
+                            self.toast_ticks_remaining = 1;
                         }
                         true
                     }
@@ -464,15 +494,27 @@ impl ZellijPlugin for State {
             return;
         }
 
-        let max_rows = rows.saturating_sub(3);
+        let toast_rows = if self.toast_message.is_some() { 2 } else { 0 };
+        let max_rows = rows.saturating_sub(3 + toast_rows);
         for (i, task) in self.tasks.iter().take(max_rows).enumerate() {
             let line = self.render_task(task);
 
             if i == self.selected_index {
-                println!("\x1b[7m{}\x1b[0m", line);
+                // Re-establish reverse video after every reset so tree prefix colors
+                // and status symbols don't break the highlight bar mid-line.
+                let highlighted = line.replace("\x1b[0m", "\x1b[0m\x1b[7m");
+                let visible_len = strip_ansi(&line).chars().count();
+                let padding = " ".repeat(cols.saturating_sub(visible_len));
+                println!("\x1b[7m{}{}\x1b[0m", highlighted, padding);
             } else {
                 println!("{}", line);
             }
+        }
+
+        if let Some(msg) = &self.toast_message.clone() {
+            println!();
+            let toast = format!(" {} ", msg);
+            println!("\x1b[7m\x1b[1m{}\x1b[0m", toast);
         }
     }
 }
