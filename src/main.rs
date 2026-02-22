@@ -102,6 +102,7 @@ struct State {
     repository: TaskRepository,
     tasks: Vec<TaskLine>,
     selected_index: usize,
+    scroll_offset: usize,
     error: Option<String>,
     toast_message: Option<String>,
     toast_ticks_remaining: u8,
@@ -496,10 +497,18 @@ impl ZellijPlugin for State {
 
         let toast_rows = if self.toast_message.is_some() { 2 } else { 0 };
         let max_rows = rows.saturating_sub(3 + toast_rows);
-        for (i, task) in self.tasks.iter().take(max_rows).enumerate() {
+
+        // Keep scroll_offset in sync with selected_index
+        if self.selected_index < self.scroll_offset {
+            self.scroll_offset = self.selected_index;
+        } else if max_rows > 0 && self.selected_index >= self.scroll_offset + max_rows {
+            self.scroll_offset = self.selected_index - max_rows + 1;
+        }
+
+        for (i, task) in self.tasks.iter().skip(self.scroll_offset).take(max_rows).enumerate() {
             let line = self.render_task(task);
 
-            if i == self.selected_index {
+            if self.scroll_offset + i == self.selected_index {
                 // Re-establish reverse video after every reset so tree prefix colors
                 // and status symbols don't break the highlight bar mid-line.
                 let highlighted = line.replace("\x1b[0m", "\x1b[0m\x1b[7m");
