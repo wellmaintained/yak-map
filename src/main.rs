@@ -81,11 +81,18 @@ impl TaskRepository {
             _ => TaskState::Todo,
         };
 
-        let name = path.split('/').last().unwrap_or(path).to_string();
+        let name = self
+            .get_field(path, "name")
+            .unwrap_or_else(|| path.split('/').last().unwrap_or(path).to_string());
+
+        let yak_id = self
+            .get_field(path, "id")
+            .unwrap_or_else(|| path.split('/').last().unwrap_or(path).to_string());
 
         TaskLine {
             path: path.to_string(),
             name,
+            yak_id,
             depth,
             state,
             assigned_to: self.get_field(path, "assigned-to"),
@@ -112,6 +119,7 @@ struct State {
 pub struct TaskLine {
     path: String,
     name: String,
+    yak_id: String,
     depth: usize,
     state: TaskState,
     assigned_to: Option<String>,
@@ -126,6 +134,7 @@ impl Default for TaskLine {
         Self {
             path: String::new(),
             name: String::new(),
+            yak_id: String::new(),
             depth: 0,
             state: TaskState::Todo,
             assigned_to: None,
@@ -466,9 +475,8 @@ impl ZellijPlugin for State {
                     }
                     BareKey::Char('y') if key.has_no_modifiers() => {
                         if let Some(task) = self.tasks.get(self.selected_index) {
-                            let yx_name = task.path.replace('/', " ");
-                            copy_yak_name_to_clipboard(&yx_name);
-                            self.toast_message = Some(format!("Copied: {}", yx_name));
+                            copy_yak_name_to_clipboard(&task.yak_id);
+                            self.toast_message = Some(format!("Copied: {}", task.yak_id));
                             self.toast_ticks_remaining = 1;
                         }
                         true
@@ -553,6 +561,29 @@ mod tests {
 
     fn set_field(yaks: &Path, task_path: &str, field: &str, value: &str) {
         fs::write(yaks.join(task_path).join(field), value).unwrap();
+    }
+
+    #[test]
+    fn get_task_uses_name_file_when_present() {
+        let (_temp, yaks) = mock_yaks();
+        create_task(&yaks, "my-hyphenated-slug");
+        set_field(&yaks, "my-hyphenated-slug", "name", "my hyphenated slug");
+
+        let repo = TaskRepository::new(yaks);
+        let task = repo.get_task("my-hyphenated-slug", 0);
+
+        assert_eq!(task.name, "my hyphenated slug");
+    }
+
+    #[test]
+    fn get_task_falls_back_to_slug_when_name_file_absent() {
+        let (_temp, yaks) = mock_yaks();
+        create_task(&yaks, "my-hyphenated-slug");
+
+        let repo = TaskRepository::new(yaks);
+        let task = repo.get_task("my-hyphenated-slug", 0);
+
+        assert_eq!(task.name, "my-hyphenated-slug");
     }
 
     #[test]
@@ -998,10 +1029,26 @@ mod tests {
     }
 
     #[test]
-    fn yx_name_is_path_with_slashes_as_spaces() {
-        let path = "fix/stop/clear/path";
-        let yx_name = path.replace('/', " ");
-        assert_eq!(yx_name, "fix stop clear path");
+    fn get_task_uses_id_file_when_present() {
+        let (_temp, yaks) = mock_yaks();
+        create_task(&yaks, "parent/my-task");
+        set_field(&yaks, "parent/my-task", "id", "my-task-a1b2");
+
+        let repo = TaskRepository::new(yaks);
+        let task = repo.get_task("parent/my-task", 1);
+
+        assert_eq!(task.yak_id, "my-task-a1b2");
+    }
+
+    #[test]
+    fn get_task_falls_back_to_leaf_slug_for_id_when_id_file_absent() {
+        let (_temp, yaks) = mock_yaks();
+        create_task(&yaks, "parent/my-task");
+
+        let repo = TaskRepository::new(yaks);
+        let task = repo.get_task("parent/my-task", 1);
+
+        assert_eq!(task.yak_id, "my-task");
     }
 
     #[test]
